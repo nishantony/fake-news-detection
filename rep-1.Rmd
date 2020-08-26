@@ -1,0 +1,473 @@
+---
+title: "Fake News Classification"
+author: '*_Sander Martins Goncalves (212608), Nisha Antony (213405)_*'
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+## **Introduction**
+
+### Project
+
+Trustful information is essential to the humanity since we act based on it, mainly in regard to aspects of life such as economy, politics and even safety. As flow of information increases each day and the production and sharing of contents becomes easier, the quality of information decreases. People sometimes gives priority to the impulse of sharing, more than to the verification. Moreover, more than just cases where a person shares not verified contents, the bigger problem arises when people has actual goal to distort information for personal gain, in what is called the manipulation of the masses. Having this context in mind that this project arises, in an attempt to test and compare what models perform better in recognizing if an information is fake or not.
+
+### Dataset
+
+The data used for this project is a collection of news in Chinese and the translated version to English. The column *Title1* is *fake news* and the column *Title2* is *news*. The dataset provides a comparison between *Title1* and *Title2* regarding to their content. The label of *Title2* is given by comparing the two news of this dataset and classifying them as "unrelated", "Agreed" or "Disagreed". The label to be used is given by take in consideration all comparison of the the news of the dataset. If one or more labels for a specific news (from Title2) is "Agreed" (with Title1), then this specific news (row of Title2) will be considered "fake" (or "1" for training) and if we don't find any "Agreed" label (for this news of Title2), it will be considered "Not Fake" (or "0" for training).
+
+Now let's load our input dataset using read_csv() from readr library.
+
+```{r}
+library(readr)
+library(tidyr)
+
+fake_news_data = read_csv('train.csv')
+# for faster execution use sample.csv
+# fake_news_data = read_csv('sample.csv')
+
+head(fake_news_data)
+```
+
+> As you can see, the train dataset contains 8 columns: 
+
+* id - the id of each news pair.
+* tid1 - the id of fake news title 1.
+* tid2 - the id of news title 2.
+* title1_zh - the fake news title 1 in Chinese.
+* title2_zh - the news title 2 in Chinese  (has both fake and not fake).
+* title1_en - the fake news title 1 in English.
+* title2_en - the news title 2 in English (has both fake and not fake).
+* label - indicates the relation between the news pair: agreed/disagreed/unrelated.
+
+## Models and Techniques Used
+
+There are many different algorithms we can choose from when doing text classification. The techniques we used for the implemenation of this project are Naive Bayes (NB), Support Vector Machines (SVM), Logistic Regression and Keras based Neural Network.
+
+## Implementation & Evaluation of Models
+In order to implement the algorithms, is necessary to change its format in a way that is suitable to be the input of the models. For this project case the preprocessing was divided into two groups, according to the its respect group of algorithms. The first group, composed by Naive Bayes (NB), Logistic Regression (LR), uses Document Term Matrix (DTM) as *input*, and the other one consists of Support Vector Machines (SVM) and Keras based NN.
+
+>The implementation plan for each model is as follows:
+
+* Data Pre-processing
+* Creating corpus (only for NB & LR)
+* Generating DTM (only for NB & LR)
+* Spliting dataset into Train and Test
+* Build & train the models
+* Prediction on Test data 
+* Evaluation of the models using Test data
+
+### Data Preprocessing
+
+Data Preprocessing is a common process for all models of this project. It is respect to the analysis the data and getting the final label for each news. As explained, each row of the dataset is a comparison between *Title1*(fake news) and *Title2*(news). In order to decide if *Title2 news* is fake or not, is necessary to check and compare the entire dataset. Given all comparison related to each *Title2 news*, if one or more label "Agreed" is found, this news receive the final label as "fake" (or 1 for training). After the phase of data preprocessing, there are two different paths to follow accordig to the models. The models Naive Bayes (NB) and Logistic Regression require the creation of "Corpus" and "DTM" and the *split of the data*. By the other hand, the other models do not require "*Corpus*" or "*DTM*", allowing the process to go directly to the *split of the data*.
+
+```{r}
+dataPreprocessing <- function(df) {
+  df_train <- data.frame('id' = df$tid2 , 
+                         'news' = df$title2_en, 
+                         'label' = df$label);
+  df_train_unique <-  unique(df_train);
+  df_train_unique$label <- as.factor(df_train_unique$label);
+  train_label <- pivot_wider(df_train_unique, 
+                             id_cols = c('id','news'),
+                             names_from = 'label', 
+                             values_from ='label');
+  train_label <- as.data.frame(train_label);
+  train_label$final_label <- NA;
+  
+  #It provide the final label. If agreed->fake news, else not fake
+  
+  for (i in 1:length(train_label$id)){
+    if(!is.na(train_label$agreed[i])) {
+      train_label$final_label[i] <-'fake';
+    }
+    else {
+      train_label$final_label[i] <-'not fake';
+    }
+  }
+  train_label$final_label[train_label$final_label=='not fake'] <- as.integer(0);
+  train_label$final_label[train_label$final_label=='fake'] <- as.integer(1);
+  
+  train_label_final <- train_label[c('id', 'news','final_label')];
+  train_label_final$news<- as.character(train_label_final$news);
+  
+  return(train_label_final);
+}
+```
+
+### Creating Corpus and Generating DTM
+
+This part is responsible for creating a clean Corpus that will remove all not necessary words and characters in order to improve the learning of the models.
+
+```{r}
+createCorpusAndDTM <- function(dataset) {
+  nb_corpus <- VCorpus(VectorSource(dataset$news));
+  nb_corpus_clean <- tm_map(nb_corpus, content_transformer(tolower));
+  nb_corpus_clean <- tm_map(nb_corpus_clean, content_transformer(removeNumbers));
+  nb_corpus_clean <- tm_map(nb_corpus_clean, removePunctuation);
+  nb_corpus_clean <- tm_map(nb_corpus_clean, removeWords,stopwords());
+  nb_corpus_clean <- tm_map(nb_corpus_clean, stemDocument);
+  nb_corpus_clean <- tm_map(nb_corpus_clean, stripWhitespace);
+  doc_matrix = DocumentTermMatrix(nb_corpus_clean);
+  
+  return(doc_matrix);
+}
+```
+
+### Splitting Data
+At this stage the data is ready to be subdivided into *training* and *test* and ready to be used as *input*.
+
+```{r}
+splitDataset <- function(dataset, id) {
+  smp_size <- floor(0.75 * nrow(dataset))
+  
+  ## set the seed to make your partition reproducible
+  set.seed(123)
+  train_index <- sample(seq_len(nrow(dataset)), size = smp_size)
+  if (id == 1) {
+    return(dataset[train_index, ])
+  } else {
+    return(dataset[-train_index, ])
+  }
+}
+```
+
+### Naive Bayes 
+
+Naive Bayes (NB) is a classifying algorithm which uses data about prior events to estimate the probability of future events. It is based on the Bayes theorem. Though it is a simple algorithm, it performs well in many text classification problems. Due to simplicity and effwctiveness, it is now the de facto standard for text classification problems. 
+
+In this project, we are building a classifier that classifies the news titles to either 'Fake' or 'Not fake' based on the labels 'Agreed', 'Disagreed' and 'unrelated'. According to the description of the dataset a record is labelled as 'Agreed' when the news titles in column: 'title2_en' is similar to the pre-defined fake news articles available in column: 'title1_en'; the record i labelled as 'Disagreed' when the article in 'title2_en' refutes the fake news in 'title1_en'; and it is labelled 'unrelated' when the article in 'title2_en' is not about any of the articles in 'title1_en'. During the implementation, we are considering the articles with label 'Agreed' as *Fake* and the rest as *Not Fake*.
+
+Now let's see the implementation of Naive Bayes Text Classifier. 
+
+```{r include=FALSE}
+library(tm)
+library(tidyr)
+library(e1071)
+library(gmodels)
+library(MLmetrics)
+```
+
+```{r}
+preprocessed_train_data <- dataPreprocessing(fake_news_data)
+preprocessed_train_data$final_label <- factor(preprocessed_train_data$final_label)
+```
+
+We need to find out what is the Probability of class *fake* given the input title and the Probability of class *not fake* given the input title.
+
+Here, we need to find out which class has a bigger probability for the new sentence. i.e., we need to find which is bigger: *P(fake | input title)* or *P(not fake | input title)*. Since the likelihood of having this input title in training dataset is very less, we will looking for the individual words rather tham the entire title. To find the total number of occurrence of a word in a class, we create the Corpus. During the creation of the corpus, we transform the contentsto lower case, eliminate the stopwords, punctuations and numbers, and stem the words.
+
+Here's the function to create the corpus and generate DTM for our *preprocessed_train_data*:
+
+```{r eval=FALSE}
+dtm <- createCorpusAndDTM(preprocessed_train_data)
+```
+
+After the dtm generation, we split the data to train and test for training and cross-calidation of our model. We validate the classifier by comparing the predicted value and actual label of the validation dataset. 
+
+```{r eval=FALSE}
+smp_size <- floor(0.75 * nrow(preprocessed_train_data));
+
+nb_train.labels <- preprocessed_train_data[1:smp_size, ]$final_label;
+nb_test.labels <- 
+  preprocessed_train_data[smp_size:nrow(preprocessed_train_data), ]$final_label;
+
+# split the document-term matrix
+nb_dtm.train <- dtm[1:smp_size, ];
+nb_dtm.test <- dtm[smp_size:nrow(preprocessed_train_data), ];
+```
+
+Then we find the frequent terms and reduce dtm of train and test data. 
+
+```{r eval=FALSE}
+nb_freq_terms = findFreqTerms(nb_dtm.train, 5);
+nb_dtm_freq.train <- nb_dtm.train[, nb_freq_terms]
+nb_dtm_freq.test <- nb_dtm.test[, nb_freq_terms]
+```
+
+Since NB works on factors, but our DTM only has numerics. Let's define a function which converts counts to yes/no factor, and apply it to our reduced matrices.
+
+```{r eval=FALSE}
+convert_counts <- function(x){
+  x <- ifelse(x > 0, "Yes", "No")
+}
+
+nb_reduced_dtm.train <- apply(nb_dtm_freq.train, MARGIN=2, convert_counts);
+nb_reduced_dtm.test  <- apply(nb_dtm_freq.test, MARGIN=2, convert_counts);
+```
+
+Now that we have the reduced_dtm, we can train our model by passing nb_reduced_dtm.train into naiveBayes() function and try to predict the labels of test data.
+
+```{r eval=FALSE}
+# Training
+nb_classifier <- naiveBayes(nb_reduced_dtm.train, nb_train.labels);
+# Predicting
+nb_predict <- predict(nb_classifier, nb_reduced_dtm.test);
+```
+
+Now we can compute the accuracy of this classifier by comparing the predicted values in *nb_predict* and *nb_test.labels* and computing F1-Score.
+
+```{r eval=FALSE}
+# Accuracy
+nb_accuracy <- Accuracy(nb_predict, nb_test.labels)
+nb_accuracy
+
+# F1-Score
+nb_f1score <- F1_Score(nb_predict, nb_test.labels)
+nb_f1score
+```
+
+Our Naive Bayes classifier has an accuracy of 62% and a f1-score of ~ 74%.
+
+### Logistic Regression
+
+Logistic regression is a statistical machine learning algorithm that classifies the data by considering outcome variables on extreme ends and this algorithm is providing a discriminatory line between classes. Compared to another simple model, linear regression, which requires hard threshold in classification, logistic regression can overcome threshold values for a large dataset. Logistic regression produces a logistic curve, which is limited to values between 0 to 1, by adding sigmoid function in the end.
+
+In our project, we initially have 3 labels which will be converted to 0 and 1 for *not fake* and *fake* respecitively.
+
+```{r}
+library(kernlab)
+library(tm)
+library(tidyr)
+library(caTools)
+library(ROCR)
+library(MLmetrics)
+```
+
+```{r}
+preprocessed_train_data <- dataPreprocessing(fake_news_data)
+preprocessed_train_data$final_label <- factor(preprocessed_train_data$final_label)
+```
+
+Since the classification is based on the textual input, we are creating Corpus and then generate the DTM.
+
+```{r eval=FALSE}
+lr_dtm <- createCorpusAndDTM(preprocessed_train_data)
+```
+
+Now we remove the sparse terms and transform the reduced dtm to a dataframe.
+
+```{r eval=FALSE}
+lr_dtm = removeSparseTerms(lr_dtm, 0.98);
+lr_dtm_sparse <- as.data.frame(as.matrix(lr_dtm))
+colnames(lr_dtm_sparse) = make.names(colnames(lr_dtm_sparse))
+
+lr_dtm_sparse$label = as.factor(preprocessed_train_data$final_label)
+```
+
+After obtaining the lr_dtm_sparse data, we split this into train and test subset.
+
+```{r eval=FALSE}
+set.seed(123)
+spl = sample.split(lr_dtm_sparse$label, 0.7)
+lr_train = subset(lr_dtm_sparse, spl == TRUE)
+lr_test = subset(lr_dtm_sparse, spl == FALSE)
+```
+
+Now we build the model using gml() function and the train data.
+
+```{r eval=FALSE}
+lr <- glm(label ~ ., data = lr_train, family = "binomial")
+lr_pred_train <- predict(lr, type = "response")
+```
+
+Lets see the accuracy on the training data.
+
+```{r eval=FALSE}
+# Accuracy on training 
+lr_prediction_trainLog = prediction(lr_pred_train, lr_train$label)
+lr_train_accuracy <- as.numeric(performance(lr_prediction_trainLog, "auc")@y.values)
+lr_train_accuracy
+```
+
+Now we can try to predict the label of test data and compute the accuracy.
+
+```{r eval=FALSE}
+lr_pred_test = predict(lr, newdata = lr_test, type="response")
+lr_prediction_testLog = prediction(lr_pred_test, lr_test$label)
+lr_accuracy <- as.numeric(performance(lr_prediction_testLog, "auc")@y.values)
+lr_accuracy
+```
+
+As you can see the accuracy of lr_train and lr_test is about 78% and ~ 76% respectively.
+
+### Support Vector Machines (SVM):
+
+Support vector machines is an algorithm that determines the best decision boundary between vectors that belong to a given group (or category) and vectors that do not belong to it. It is a supervised learning algorithm. SVMs work by trained with specific data already organized into two different categories. Hence, the model is constructed after it has already been trained. The goal of the SVM method  is to distinguish which category any new data falls under, in addition, it must also maximize the margin between the two classes. SVM creates a hyperplane in order to separate and categorize the features. The optimal hyperplane is usually calculated by creating support vectors on both sides of the hyperplane in which each vector must maximize the distance between each other. In other words, the larger the distance between each vector around the hyperplane, the more accurate the decision boundary will be between the categories of features.
+
+```{r eval=FALSE}
+library(tm)
+library(dplyr)
+library(tidyselect)
+library(tidyr)
+library(caTools)
+library(RTextTools)
+library(readr)
+library(MLmetrics)
+```
+
+Lets load the preprocessed input data.
+
+```{r eval=FALSE}
+preprocessed_train_data <- dataPreprocessing(fake_news_data)
+```
+
+Here we are not going to generate the corpus so we can directly split the dataset into svm_train and svm_test.
+
+```{r eval=FALSE}
+svm_train <- splitDataset(preprocessed_train_data, 1)
+svm_test <- splitDataset(preprocessed_train_data, 2)
+```
+
+The news titles and label in svm_train and svm_test are extracted from the dataframe and initialized as svm_train_input, svm_train_label, svm_test_input and svm_test
+
+```{r eval=FALSE}
+svm_train_input <-  svm_train %>% select('news')
+svm_train_label <- svm_train %>% select('final_label')
+
+svm_test_input <- svm_test %>% select('news')
+svm_test_label <- svm_test %>% select('final_label')
+```
+
+Now we are going to creat DTM before building the model.
+
+```{r eval=FALSE}
+matrix <- create_matrix(svm_train_input, language="english",removeNumbers=FALSE,removeStopwords = TRUE, stemWords=TRUE, removePunctuation=TRUE,toLower=TRUE, weighting=weightTfIdf)
+```
+
+Using the matrix created, we now create the train_container which will be used for training model. 
+
+```{r eval=FALSE}
+train_size = nrow(svm_train_input)
+train_container <- create_container(matrix,t(svm_train_label),trainSize = 1:train_size,virgin=FALSE)
+```
+
+The training of the svm_model is a time consuming process. We have provided the pretrained model in the 'models' folder of our repo. You can use the pretrained model, or can train the model using following command.
+
+```{r eval=FALSE}
+# Training the svm model will take more time, you can load the our pretrained model from the 'models' folder 
+# model_svm <- load(file = "C:\\Users\\sande\\OneDrive\\Masters Data Science\\2º Semestre\\Statistics\\Project\\Fake news pair challenge 2019\\fake-news-detection\\models\\model_svm.rda")
+model_svm <- train_model(train_container, "SVM", kernel="linear", cost=1)
+```
+
+After the training phase, we are now going to predict the labels of test data and evaluate the performance.
+
+```{r eval=FALSE}
+set.seed(333)
+test_index <- sample(seq_len(nrow(svm_test_input)), size =5 )
+
+svm_prediction_data <- as.list(svm_test_input[test_index, ])
+```
+
+Now create a prediction document term matrix and container for test input data. Then we classify the data in svm_prediction_container using model_svm
+
+```{r eval=FALSE}
+svm_pred_matrix <- create_matrix(svm_prediction_data, originalMatrix=matrix) 
+
+# create the corresponding container
+svm_pred_size = length(svm_prediction_data);
+snm_prediction_container <- create_container(svm_pred_matrix, labels=rep(0, svm_pred_size), testSize=1:svm_pred_size, virgin=FALSE) 
+
+
+results <- classify_model(snm_prediction_container, model_svm)
+
+svm_test_label[test_index, ]
+Accuracy(results$SVM_LABEL, svm_test$final_label)
+```
+
+As you can see, SVM has a low accuracy rate (~ 54%) compared to other models.
+
+### Keras-based Neural Network 
+
+Keras is an API that can be used for running Neural Networks. In this project's case it was used for classification of text. A neural network model is composed by layers that carries information such as weights, shape, activation function and so on. The implementation of Keras-based Neural Network and the model used can be seem bellow.
+
+```{r eval=FALSE}
+library(keras)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tidyr)
+```
+
+```{r eval=FALSE}
+preprocessed_train_data <- dataPreprocessing(fake_news_data)
+```
+
+Here we are not going to generate the corpus so we can directly split the dataset into nn_train and nn_test.
+
+```{r eval=FALSE}
+nn_train <- splitDataset(preprocessed_train_data, 1)
+nn_test <- splitDataset(preprocessed_train_data, 2)
+```
+
+The next step in this method is the text vectorization. We tokenize the words in news titles and convert them into vectors which will be the input for building nn. 
+
+```{r eval=FALSE}
+num_words <- 10000
+max_length <- 50
+text_vectorization <- layer_text_vectorization(max_tokens = num_words, output_sequence_length = max_length ,)
+text_vectorization %>%  adapt(nn_train$news)
+
+get_vocabulary(text_vectorization)
+
+text_vectorization(matrix(nn_train$news[1], ncol = 1))
+```
+
+The neural network is created by stacking layers. Here, the input data consists of an array of word-indices. The labels to predict are either 0 or 1.
+
+```{r eval=FALSE}
+input <- layer_input(shape = c(1), dtype = "string")
+
+output <- input %>% 
+  text_vectorization() %>% 
+  layer_embedding(input_dim = num_words + 1, output_dim = 16) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dropout(0.5) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+```{r eval=FALSE}
+nn_model <- keras_model(input, output)
+```
+
+A model needs a loss function and an optimizer for training. Since this is a binary classification problem and the model outputs a probability (a single-unit layer with a sigmoid activation), we’ll use the binary_crossentropy loss function.
+
+```{r eval=FALSE}
+nn_model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = list('accuracy')
+)
+```
+
+Now we are going to train the model for 6 epochs in mini-batches of 512 samples. This is 20 iterations over all samples in the x_train and y_train tensors. While training, monitor the model’s loss and accuracy on the 10,000 samples from the validation set:
+
+```{r eval=FALSE}
+nn_history <- nn_model %>% fit(
+  nn_train$news,
+  nn_train$final_label == 1,
+  epochs = 6,
+  batch_size = 512,
+  validation_split = 0.2,
+  verbose=1
+)
+```
+
+Now we are going to evaluate the model by predicting the labels of nn_test.
+
+```{r eval=FALSE}
+nn_results <- nn_model %>% evaluate(nn_test$news, 
+                              nn_test$final_label == 1, 
+                              verbose = 1)
+plot(nn_history)
+```
+
+Accuracy of the keras based NN is ~ 71% in both the test data and train datasets.
+
+### Conclusion
+
+This report could present how different models perform in classifying text in terms of "fake" and "not fake". As can be observed the model that had the *best* performance was Logistic Regression with approximately 76% and the one that had the *worst* was the Support Vector Machines (SVM) with accuracy around 54%. It is understood that the scored achieved is acceptable but not higher if compared with the literature. Some of  the reason could be attributed to not utilizing, for example, pre-trained models for word embedding or more complex models. Furthermore, for some models it was necessary to use reduced data due to restrictions of computational power. This could impact the training process and, consequently, the final performance of the algorithm.
